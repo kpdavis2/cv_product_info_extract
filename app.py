@@ -12,10 +12,27 @@ from segment_anything import sam_model_registry, SamPredictor
 yolo_model = YOLO('runs/train/product_model/weights/best.pt')
 ocr_reader = easyocr.Reader(['en']) # ocr model
 
-st.title("Key Product Features")
-st.subheader("Annie Illing, Katherine Davis, and Andrea Noh")
+st.markdown("<h1 style='text-align: center;'>Key Product Features</h1>", unsafe_allow_html=True)
+st.markdown("<h3 style='text-align: center;'>Annie Illing, Katherine Davis, and Andrea Noh</h3>", unsafe_allow_html=True)
+st.markdown("""
+    Take a picture of your product on a solid, contrasting background next to a U.S. quarter.\
+    The site will return the product size, product dimensions, and the product on a \
+    promotional background!        
+""", unsafe_allow_html=True)
 
 uploaded_file = st.file_uploader("Upload an image", type=["jpeg", "jpg", "png"]) # upload image
+
+backgrounds_list = ["Dark Background and Base", "Dark Background White Base", "White Background White Base"]
+selected_background = st.selectbox("Select a background:", backgrounds_list)
+blank = False
+if selected_background == "Click here":
+    blank = True
+elif selected_background == "Dark Background and Base":
+    promo_img_path = "images/promo_dark.jpeg"
+elif selected_background == "Dark Background White Base":
+    promo_img_path = "images/promo.png"
+elif selected_background == "White Background White Base":
+    promo_img_path = "images/promo2.jpeg"
 
 if uploaded_file is not None:
     st.image(uploaded_file, caption='Uploaded image', use_container_width=True)
@@ -99,18 +116,55 @@ if uploaded_file is not None:
         final_mask = masks[0][0].cpu().numpy().astype(np.uint8) * 255  # Scale mask for visualization
 
         # load and resize the promotional background image
-        promo_img_path = "promo_dark.jpeg"
-        promo_bgr = cv2.imread(promo_img_path, cv2.IMREAD_COLOR)
-        if promo_bgr is None:
-            st.error("Promo background image not found. Please ensure 'promo2.jpeg' exists in the working directory.")
+        if blank == True:
+            st.write("Product on background will appear here.")
         else:
+            promo_bgr = cv2.imread(promo_img_path, cv2.IMREAD_COLOR)
             promo_resized = cv2.resize(promo_bgr, (640, 640))
             product_image = cv2.resize(image_bgr, (640, 640))
             final_mask_resized = cv2.resize(final_mask, (640, 640), interpolation=cv2.INTER_NEAREST)
-            product_only = cv2.bitwise_and(product_image, product_image, mask=final_mask_resized) # product from the original image using the mask
-            final_composite = promo_resized.copy()
-            final_composite[final_mask_resized != 0] = product_only[final_mask_resized != 0] # product onto the promo background where the mask is non-zero
+            # product_only = cv2.bitwise_and(product_image, product_image, mask=final_mask_resized) # product from the original image using the mask
+            # final_composite = promo_resized.copy()
+            # final_composite[final_mask_resized != 0] = product_only[final_mask_resized != 0] # product onto the promo background where the mask is non-zero
+            # Get mask indices of the product
+            product_mask_indices = np.argwhere(final_mask_resized > 0)
+            if product_mask_indices.size == 0:
+                st.error("No product pixels found in the mask.")
+            else:
+                top_left = product_mask_indices.min(axis=0)
+                bottom_right = product_mask_indices.max(axis=0)
 
-            final_composite_rgb = cv2.cvtColor(final_composite, cv2.COLOR_BGR2RGB) # convert final composite to RGB for display
-            st.image(final_composite_rgb, caption="Product on Promo Background", use_container_width=True)
+                # Crop product and mask using bounding box of the mask
+                product_crop = product_image[top_left[0]:bottom_right[0], top_left[1]:bottom_right[1]]
+                mask_crop = final_mask_resized[top_left[0]:bottom_right[0], top_left[1]:bottom_right[1]]
 
+                # Resize product to be 1/2 of background height
+                background_h, background_w = promo_resized.shape[:2]
+                target_product_h = background_h // 2
+                orig_h, orig_w = product_crop.shape[:2]
+                scale_factor = target_product_h / orig_h
+                new_w = int(orig_w * scale_factor)
+                new_h = target_product_h
+
+                product_resized = cv2.resize(product_crop, (new_w, new_h), interpolation=cv2.INTER_AREA)
+                mask_resized = cv2.resize(mask_crop, (new_w, new_h), interpolation=cv2.INTER_NEAREST)
+
+                # Position product so bottom is at 3/4 of background height
+                y_bottom_target = int(background_h * 0.8)
+                y_offset = y_bottom_target - new_h
+                y_offset = max(0, min(background_h - new_h, y_offset))  # ensure on-screen
+
+                x_offset = max(0, (background_w - new_w) // 2)  # center horizontally
+
+                # Composite product onto promo background
+                roi = promo_resized[y_offset:y_offset + new_h, x_offset:x_offset + new_w]
+                mask_inv = cv2.bitwise_not(mask_resized)
+                bg = cv2.bitwise_and(roi, roi, mask=mask_inv)
+                fg = cv2.bitwise_and(product_resized, product_resized, mask=mask_resized)
+                dst = cv2.add(bg, fg)
+
+                final_composite = promo_resized.copy()
+                final_composite[y_offset:y_offset + new_h, x_offset:x_offset + new_w] = dst
+
+                final_composite_rgb = cv2.cvtColor(final_composite, cv2.COLOR_BGR2RGB)
+                st.image(final_composite_rgb, caption="Product Resized and Positioned at 3/4 Height", use_container_width=True)
